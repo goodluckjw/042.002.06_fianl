@@ -101,7 +101,6 @@ def run_search_logic(query, unit):
                                 호출력됨 = True
                             항덩어리.append("<br>".join(["&nbsp;&nbsp;&nbsp;&nbsp;" + l for l in 줄단위]))
 
-                # 규칙1: 조문내용엔 없고 항/호/목에만 있을 경우 조문내용 + 첫 항내용 붙여서 출력
                 if 항출력 and not 조출력 and not 첫_항출력됨:
                     출력덩어리.append(f"{조내용} {highlight(항내용, query)}")
                     첫_항내용_텍스트 = 항내용.strip()
