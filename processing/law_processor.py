@@ -1,3 +1,4 @@
+
 import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
@@ -9,26 +10,17 @@ BASE = "http://www.law.go.kr"
 
 def get_law_list_from_api(query):
     encoded_query = quote(f'"{query}"')
+    url = f"{BASE}/DRF/lawSearch.do?OC={OC}&target=law&type=XML&display=100&search=2&knd=A0002&query={encoded_query}"
+    res = requests.get(url, timeout=10)
+    res.encoding = 'utf-8'
     laws = []
-    page = 1
-    while True:
-        url = f"{BASE}/DRF/lawSearch.do?OC={OC}&target=law&type=XML&display=100&page={page}&search=2&knd=A0002&query={encoded_query}"
-        res = requests.get(url, timeout=10)
-        res.encoding = 'utf-8'
-        if res.status_code != 200:
-            break
+    if res.status_code == 200:
         root = ET.fromstring(res.content)
-        law_elements = root.findall("law")
-        if not law_elements:
-            break
-        for law in law_elements:
+        for law in root.findall("law"):
             laws.append({
                 "법령명": law.findtext("법령명한글", "").strip(),
                 "MST": law.findtext("법령일련번호", "")
             })
-        if len(law_elements) < 100:
-            break
-        page += 1
     return laws
 
 def get_law_text_by_mst(mst):
@@ -62,15 +54,14 @@ def run_search_logic(query, unit):
 
         for article in articles:
             조내용 = article.findtext("조문내용") or ""
+            항들 = article.findall("항")
+
             조출력 = keyword_clean in clean(조내용)
-            출력덩어리 = []
-            첫_항출력됨 = False
-            첫_항내용_텍스트 = ""
+            출력덩어리 = [highlight(조내용, query)] if 조출력 else []
+            첫항출력 = False
+            첫항텍스트 = ""
 
-            if 조출력:
-                출력덩어리.append(highlight(조내용, query))
-
-            for idx, 항 in enumerate(article.findall("항")):
+            for 항 in 항들:
                 항내용 = 항.findtext("항내용") or ""
                 항출력 = keyword_clean in clean(항내용)
                 항덩어리 = []
@@ -89,7 +80,8 @@ def run_search_logic(query, unit):
                         목내용_list = 목.findall("목내용")
                         줄단위 = []
                         for m in 목내용_list:
-                            line = (m.text or "").strip()
+                            raw = m.text or ""
+                            line = raw.replace("<![CDATA[", "").replace("]]>", "").strip()
                             if keyword_clean in clean(line):
                                 줄단위.append(highlight(line, query))
                         if 줄단위:
@@ -98,17 +90,18 @@ def run_search_logic(query, unit):
                                 항출력 = True
                             if not 호출력됨:
                                 항덩어리.append("&nbsp;&nbsp;" + highlight(호내용, query))
-                                호출력됨 = True
-                            항덩어리.append("<br>".join(["&nbsp;&nbsp;&nbsp;&nbsp;" + l for l in 줄단위]))
+                            for l in 줄단위:
+                                항덩어리.append("&nbsp;&nbsp;&nbsp;&nbsp;" + l)
 
-                if 항출력 and not 조출력 and not 첫_항출력됨:
-                    출력덩어리.append(f"{조내용} {highlight(항내용, query)}")
-                    첫_항내용_텍스트 = 항내용.strip()
-                    첫_항출력됨 = True
-                    조출력 = True
-                elif 항출력 and 항내용.strip() != 첫_항내용_텍스트:
-                    출력덩어리.append(highlight(항내용, query))
-                출력덩어리.extend(항덩어리)
+                if 항출력 or 항덩어리:
+                    if not 조출력 and not 첫항출력:
+                        # 예외적 출력: 조문내용 + 항내용 한줄로 붙이기
+                        출력덩어리.append(highlight(조내용, query) + " " + highlight(항내용, query))
+                        첫항텍스트 = 항내용
+                        첫항출력 = True
+                    elif 항내용.strip() != 첫항텍스트:
+                        출력덩어리.append(highlight(항내용, query))
+                    출력덩어리.extend(항덩어리)
 
             if 출력덩어리:
                 law_results.append("<br>".join(출력덩어리))
@@ -123,7 +116,7 @@ def extract_locations(xml_data, keyword):
     articles = tree.findall(".//조문단위")
     keyword_clean = clean(keyword)
     locations = []
-    
+
     for article in articles:
         조번호 = article.findtext("조번호", "").strip()
         조제목 = article.findtext("조문제목", "") or ""
@@ -140,7 +133,8 @@ def extract_locations(xml_data, keyword):
             항내용 = 항.findtext("항내용", "") or ""
             if keyword_clean in clean(항내용):
                 locations.append(f"제{조번호}조제{항번호}항")
-    return list(set(locations))
+
+    return locations
 
 def deduplicate(seq):
     seen = set()
