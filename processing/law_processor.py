@@ -8,7 +8,7 @@ OC = os.getenv("OC", "chetera")
 BASE = "http://www.law.go.kr"
 
 def get_law_list_from_api(query):
-    exact_query = f'\"{query}\"'
+    exact_query = f'"{query}"'
     encoded_query = quote(exact_query)
     page = 1
     laws = []
@@ -92,14 +92,51 @@ def get_highlighted_articles(mst, keyword):
             elif 호출력:
                 항출력.append(highlight(항내용, keyword) + "<br>" + "<br>".join(호출력))
 
-        # 규칙1 적용: 하위에 검색어 포함되면 조문내용은 무조건 출력
         if keyword_clean in clean(조제목) or keyword_clean in clean(조내용) or 항출력:
-            clean_title = f"제{조번호}조({조제목})"
             output = f"{highlight(조내용, keyword)}"
             if 항출력:
-                output += " " + 항출력[0]  # 첫 항은 붙여쓰기
+                output += " " + 항출력[0]
                 if len(항출력) > 1:
                     output += "<br>" + "<br>".join([f"&nbsp;&nbsp;{a}" for a in 항출력[1:]])
             results.append(output)
 
     return "<br><br>".join(results) if results else "🔍 해당 검색어를 포함한 조문이 없습니다."
+
+def run_search_logic(query, unit):
+    result = {}
+    for law in get_law_list_from_api(query):
+        mst = law["MST"]
+        html = get_highlighted_articles(mst, query)
+        if html and "해당 검색어를 포함한 조문이 없습니다" not in html:
+            result[law["법령명"]] = html.split("<br><br>")
+    return result
+
+def run_amendment_logic(find_word, replace_word):
+    조사 = "을" if (ord(find_word[-1]) - 44032) % 28 else "를"
+    amendments = []
+    for law in get_law_list_from_api(find_word):
+        mst = law["MST"]
+        xml = get_law_text_by_mst(mst)
+        if not xml:
+            continue
+        tree = ET.fromstring(xml)
+        articles = tree.findall(".//조문단위")
+        조문들 = []
+        for article in articles:
+            조번호 = article.findtext("조번호", "").strip()
+            조제목 = article.findtext("조문제목", "") or ""
+            조내용 = article.findtext("조문내용", "") or ""
+            if find_word in 조제목:
+                조문들.append(f"제{조번호}조의 제목")
+            if find_word in 조내용:
+                조문들.append(f"제{조번호}조")
+            for 항 in article.findall("항"):
+                항번호 = 항.findtext("항번호", "") or ""
+                항내용 = 항.findtext("항내용", "") or ""
+                if find_word in 항내용:
+                    조문들.append(f"제{조번호}조제{항번호}항")
+        if 조문들:
+            조문_str = " 및 ".join(sorted(set(조문들)))
+            amendments.append(f"① {law['법령명']} 일부를 다음과 같이 개정한다. {조문_str} 중 “{find_word}”{조사} 각각 “{replace_word}”로 한다.")
+    return amendments or ["⚠️ 개정 대상 조문이 없습니다."]
+
