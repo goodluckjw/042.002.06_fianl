@@ -4,24 +4,21 @@ import xml.etree.ElementTree as ET
 from urllib.parse import quote
 import re
 import os
-from concurrent.futures import ThreadPoolExecutor
 
 OC = os.getenv("OC", "chetera")
 BASE = "http://www.law.go.kr"
 
 def get_law_list_from_api(query):
-    exact_query = f'\"{query}\"'
-    encoded_query = quote(exact_query)
-    page = 1
+    encoded_query = quote(f'"{query}"')
     laws = []
+    page = 1
     while True:
         url = f"{BASE}/DRF/lawSearch.do?OC={OC}&target=law&type=XML&display=100&page={page}&search=2&knd=A0002&query={encoded_query}"
         res = requests.get(url, timeout=10)
-        res.encoding = 'utf-8'
         if res.status_code != 200:
             break
         root = ET.fromstring(res.content)
-        laws_on_page = [ {
+        laws_on_page = [{
             "법령명": law.findtext("법령명한글", "").strip(),
             "MST": law.findtext("법령일련번호", "")
         } for law in root.findall("law")]
@@ -53,26 +50,27 @@ def process_article(article, keyword):
     keyword_clean = clean(keyword)
     output_lines = []
     조문내용 = article.findtext("조문내용") or ""
-    조출력 = keyword_clean in clean(조문내용)
     항들 = article.findall("항")
-
-    첫_항출력됨 = False
-    첫_항내용 = None
+    조출력 = keyword_clean in clean(조문내용)
+    조문_강제출력 = False
+    첫_항출력 = False
+    항내용_출력됨 = set()
 
     for 항 in 항들:
-        항내용 = 항.findtext("항내용") or ""
+        항내용 = 항.findtext("항내용", "") or ""
         항출력 = keyword_clean in clean(항내용)
         항덩어리 = []
         호출력 = False
 
         for 호 in 항.findall("호"):
-            호내용 = 호.findtext("호내용") or ""
+            호내용 = 호.findtext("호내용", "") or ""
             if keyword_clean in clean(호내용):
                 if not 항출력:
                     항덩어리.append(highlight(항내용, keyword))
                     항출력 = True
                 항덩어리.append("&nbsp;&nbsp;" + highlight(호내용, keyword))
                 호출력 = True
+
             for 목 in 호.findall("목"):
                 목내용_list = 목.findall("목내용")
                 if 목내용_list:
@@ -92,36 +90,38 @@ def process_article(article, keyword):
                             항덩어리.append("&nbsp;&nbsp;" + highlight(호내용, keyword))
                         항덩어리.extend(["&nbsp;&nbsp;&nbsp;&nbsp;" + l for l in combined_lines])
 
-        항내용_중복됨 = any(clean(항내용) in clean(line) for line in 항덩어리)
-
-        if 항출력:
-            if not 조출력 and not 첫_항출력됨 and not 항내용_중복됨:
-                output_lines.append(highlight(조문내용, keyword) + " " + highlight(항내용, keyword))
-                첫_항내용 = 항내용.strip()
-                첫_항출력됨 = True
+        if 항출력 or 항덩어리:
+            if not 조출력:
                 조출력 = True
-            elif 항내용.strip() != 첫_항내용 and not 항내용_중복됨:
-                output_lines.append(highlight(항내용, keyword))
+                조문_강제출력 = True
+            if not 첫_항출력:
+                if 항내용 not in 항내용_출력됨:
+                    output_lines.append(highlight(조문내용, keyword) + " " + highlight(항내용, keyword))
+                    항내용_출력됨.add(항내용)
+                첫_항출력 = True
+            else:
+                if 항내용 not in 항내용_출력됨:
+                    output_lines.append(highlight(항내용, keyword))
+                    항내용_출력됨.add(항내용)
             output_lines.extend(항덩어리)
 
-    if not output_lines and 조출력:
+    if 조출력 and not output_lines:
         output_lines.append(highlight(조문내용, keyword))
+    elif 조문_강제출력 and not 첫_항출력:
+        output_lines.insert(0, highlight(조문내용, keyword))
 
     return "<br>".join(output_lines) if output_lines else None
 
 def run_search_logic(query, unit):
     result = {}
-    laws = get_law_list_from_api(query)
-    for law in laws:
+    for law in get_law_list_from_api(query):
         mst = law["MST"]
         xml_data = get_law_text_by_mst(mst)
         if not xml_data:
             continue
         tree = ET.fromstring(xml_data)
         articles = tree.findall(".//조문단위")
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(lambda art: process_article(art, query), articles))
-        law_results = [r for r in results if r]
+        law_results = [r for r in [process_article(a, query) for a in articles] if r]
         if law_results:
             result[law["법령명"]] = law_results
     return result
