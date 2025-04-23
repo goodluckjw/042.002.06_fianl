@@ -1,3 +1,4 @@
+
 import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
@@ -8,7 +9,7 @@ OC = os.getenv("OC", "chetera")
 BASE = "http://www.law.go.kr"
 
 def get_law_list_from_api(query):
-    exact_query = f'\"{query}\"'
+    exact_query = f'"{query}"'
     encoded_query = quote(exact_query)
     page = 1
     laws = []
@@ -22,8 +23,7 @@ def get_law_list_from_api(query):
         for law in root.findall("law"):
             laws.append({
                 "법령명": law.findtext("법령명한글", "").strip(),
-                "MST": law.findtext("법령일련번호", ""),
-                "URL": BASE + (law.findtext("법령상세링크", "") or "")
+                "MST": law.findtext("법령일련번호", "")
             })
         total_count = int(root.findtext("totalCnt", "0"))
         if len(laws) >= total_count:
@@ -36,9 +36,7 @@ def get_law_text_by_mst(mst):
     try:
         res = requests.get(url, timeout=10)
         res.encoding = 'utf-8'
-        if res.status_code == 200 and b"<조문단위>" in res.content:
-            return res.content
-        return None
+        return res.content if res.status_code == 200 else None
     except:
         return None
 
@@ -46,73 +44,85 @@ def clean(text):
     return re.sub(r"\s+", "", text or "")
 
 def highlight(text, keyword):
-    if not text:
-        return ""
-    return text.replace(keyword, f"<span style='color:red'>{keyword}</span>")
-
-def get_highlighted_articles(mst, keyword):
-    xml_data = get_law_text_by_mst(mst)
-    if not xml_data:
-        return "⚠️ 본문을 불러올 수 없습니다."
-
-    tree = ET.fromstring(xml_data)
-    articles = tree.findall(".//조문단위")
-    keyword_clean = clean(keyword)
-    results = []
-
-    for article in articles:
-        조번호 = article.findtext("조번호", "").strip()
-        조제목 = article.findtext("조문제목", "") or ""
-        조내용 = article.findtext("조문내용", "") or ""
-        항들 = article.findall("항")
-
-        조출력 = False
-        항출력 = []
-
-        for 항 in 항들:
-            항내용 = 항.findtext("항내용", "") or ""
-            호출력 = []
-
-            for 호 in 항.findall("호"):
-                호내용 = 호.findtext("호내용", "") or ""
-                if keyword_clean in clean(호내용):
-                    호출력.append("&nbsp;&nbsp;" + highlight(호내용, keyword))
-
-            for 목 in 항.findall("목"):
-                줄단위 = []
-                for m in 목.findall("목내용"):
-                    if m.text and keyword_clean in clean(m.text):
-                        줄단위.extend([
-                            "&nbsp;&nbsp;&nbsp;&nbsp;" + highlight(line.strip(), keyword)
-                            for line in m.text.splitlines() if line.strip()
-                        ])
-                if 줄단위:
-                    호출력.extend(줄단위)
-
-            if keyword_clean in clean(항내용):
-                항출력.append(highlight(항내용, keyword))
-                if 호출력:
-                    항출력.extend(호출력)
-            elif 호출력:
-                항출력.append(highlight(항내용, keyword) + "<br>" + "<br>".join(호출력))
-
-        if keyword_clean in clean(조제목) or keyword_clean in clean(조내용) or 항출력:
-            clean_title = f"제{조번호}조({조제목})"
-            output = f"{highlight(조내용, keyword)}"
-            if 항출력:
-                output += " " + 항출력[0]
-                if len(항출력) > 1:
-                    output += "<br>" + "<br>".join([f"&nbsp;&nbsp;{a}" for a in 항출력[1:]])
-            results.append(output)
-
-    return "<br><br>".join(results) if results else "🔍 해당 검색어를 포함한 조문이 없습니다."
+    return text.replace(keyword, f"<span style='color:red'>{keyword}</span>") if text else ""
 
 def run_search_logic(query, unit):
-    result = {}
-    laws = get_law_list_from_api(query)
-    for law in laws:
+    result_dict = {}
+    keyword_clean = clean(query)
+
+    for law in get_law_list_from_api(query):
         mst = law["MST"]
-        output = get_highlighted_articles(mst, query)
-        if output and "해당 검색어" not in output and "본문을 불러올 수" not in output:
-            result[law["법령명"]] = [output]
-    return result
+        xml_data = get_law_text_by_mst(mst)
+        if not xml_data:
+            continue
+
+        tree = ET.fromstring(xml_data)
+        articles = tree.findall(".//조문단위")
+        law_results = []
+
+        for article in articles:
+            조내용 = article.findtext("조문내용") or ""
+            항들 = article.findall("항")
+            출력덩어리 = []
+            첫_항출력됨 = False
+            첫_항내용_텍스트 = ""
+
+            조출력 = keyword_clean in clean(조내용)
+            if 조출력:
+                출력덩어리.append(highlight(조내용, query))
+
+            for 항 in 항들:
+                항내용 = 항.findtext("항내용") or ""
+                항출력 = keyword_clean in clean(항내용)
+                항덩어리 = []
+                호출력된 = False
+
+                for 호 in 항.findall("호"):
+                    호내용 = 호.findtext("호내용") or ""
+                    if keyword_clean in clean(호내용):
+                        if not 항출력:
+                            항덩어리.append(highlight(항내용, query))
+                            항출력 = True
+                        항덩어리.append("&nbsp;&nbsp;" + highlight(호내용, query))
+                        호출력된 = True
+
+                    for 목 in 호.findall("목"):
+                        목내용_list = 목.findall("목내용")
+                        if 목내용_list:
+                            combined_lines = []
+                            for m in 목내용_list:
+                                if m.text and keyword_clean in clean(m.text):
+                                    combined_lines.extend([
+                                        highlight(line.strip(), query)
+                                        for line in m.text.splitlines() if line.strip()
+                                    ])
+                            if combined_lines:
+                                if not 항출력:
+                                    항덩어리.append(highlight(항내용, query))
+                                    항출력 = True
+                                if not 호출력된:
+                                    항덩어리.append("&nbsp;&nbsp;" + highlight(호내용, query))
+                                항덩어리.extend(["&nbsp;&nbsp;&nbsp;&nbsp;" + l for l in combined_lines])
+
+                if 항출력 or 항덩어리:
+                    if not 조출력 and not 첫_항출력됨:
+                        if 항덩어리:
+                            출력덩어리.append(highlight(조내용, query) + " " + 항덩어리[0])
+                            출력덩어리.extend(항덩어리[1:])
+                        else:
+                            출력덩어리.append(highlight(조내용, query) + " " + highlight(항내용, query))
+                        첫_항내용_텍스트 = 항내용.strip()
+                        첫_항출력됨 = True
+                        조출력 = True
+                    elif 항내용.strip() != 첫_항내용_텍스트:
+                        if 항출력:
+                            출력덩어리.append(highlight(항내용, query))
+                        출력덩어리.extend(항덩어리)
+
+            if 출력덩어리:
+                law_results.append("<br>".join(출력덩어리))
+
+        if law_results:
+            result_dict[law["법령명"]] = law_results
+
+    return result_dict
